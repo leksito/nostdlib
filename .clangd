@@ -1,0 +1,5 @@
+CompileFlags:
+  Add: [-DNOSTDLIB_IMPLEMENTATION, -DNOSTD_DEBUG]
+Diagnostics:
+  ClangTidy:
+    Remove: [misc-definitions-in-headers]
