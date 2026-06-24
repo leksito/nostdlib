@@ -634,6 +634,21 @@ TEST(hm_reserve) {
     hmfree(&hm);
 }
 
+TEST(hm_clear) {
+    hm_sv_int_t hm = {0};
+    hminit(&hm, hmopssv, alclibc());
+    *hmput(&hm, sv("a"), NULL) = 1;
+    *hmput(&hm, sv("b"), NULL) = 2;
+    size_t cap_before = hm.cap;
+    hmclear(&hm);
+    ASSERT(hm.len == 0);
+    ASSERT(hm.cap == cap_before);
+    ASSERT(hmfind(&hm, sv("a")) == NULL);
+    *hmput(&hm, sv("c"), NULL) = 3;
+    ASSERT(hm.len == 1);
+    hmfree(&hm);
+}
+
 /* --- sb ------------------------------------------------------------------- */
 
 TEST(sbinit) {
@@ -1049,6 +1064,7 @@ int main(void) {
     RUN(hm_free_zeroes);
     RUN(hm_len_cap_data);
     RUN(hm_reserve);
+    RUN(hm_clear);
 
     printf("sb:\n");
     RUN(sbinit);

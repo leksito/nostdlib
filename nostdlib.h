@@ -355,6 +355,13 @@ NOSTD_API int hmreserve_impl(void *hm, __hmdlayout_t layout, size_t n,
 #define hmforeach(it, hm)                                                      \
     for (typeof((hm)->data)(it) = (hm)->data; it < &(hm)->data[(hm)->len]; it++)
 
+#define hmclear(hm)                                                            \
+    do {                                                                       \
+        (hm)->len = 0;                                                         \
+        if ((hm)->cap > 0)                                                     \
+            memset((hm)->slots, 0xff, (hm)->cap * sizeof(size_t));             \
+    } while (0)
+
 #define hmfree(hm)                                                             \
     do {                                                                       \
         alcfree((hm)->alc, (hm)->data);                                        \
