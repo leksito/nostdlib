@@ -28,13 +28,13 @@ int main(void) {
     hminit(&counts, hmopssv, alclibc());
 
     sb_t buf = {0};
-    sbinit(&buf, len(text), alclibc());
+    sbinit(&buf, text.len, alclibc());
 
     err_t err = NULL;
 
-    while (len(text)) {
+    while (text.len) {
         sv_t word = svtokp(&text, isnotalpha);
-        if (len(word) == 0)
+        if (word.len == 0)
             continue;
         sv_t lower = sbpushmap(&buf, word, tolower, &err);
         assert(err == NULL);
@@ -43,13 +43,13 @@ int main(void) {
     }
 
     arrwords_t sorted = {0};
-    arrinitcap(&sorted, len(counts), alclibc());
-    arrinsn(&sorted, 0, data(counts), len(counts), &err);
+    arrinitcap(&sorted, counts.len, alclibc());
+    arrinsn(&sorted, 0, counts.data, counts.len, &err);
     assert(err == NULL);
-    qsort(data(sorted), len(sorted), sizeof(at(sorted, 0)), cmpcount);
+    qsort(sorted.data, sorted.len, sizeof(sorted.data[0]), cmpcount);
 
-    for (size_t i = 0; i < len(sorted); i++) {
-        kv_t kv = at(sorted, i);
+    for (size_t i = 0; i < sorted.len; i++) {
+        kv_t kv = sorted.data[i];
         printf(SVFMT ": %d\n", SVARG(kv.key), kv.val);
     }
 

@@ -27,6 +27,7 @@
 #ifndef NOSTDLIB_H
 #define NOSTDLIB_H
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -50,23 +51,39 @@
 #define NOSTD_UNPOISON(ptr, sz) ((void)0)
 #endif
 
+/* printf-diagnostics assert: only in NOSTD_DEBUG builds, pulls in <stdio.h> */
 #ifdef NOSTD_DEBUG
-#include <stdio.h>
-#define NOSTD_ASSERT(cond)                                                     \
-    ((void)((cond) || (fprintf(stderr, "ASSERT: %s:%s:%d:\t%s\n", __FILE__,    \
-                               __func__, __LINE__, #cond),                     \
-                       abort(), 0)))
+#  include <stdio.h>
+#  define NOSTD_ASSERT(cond)                                                   \
+       ((void)((cond) || (fprintf(stderr, "ASSERT: %s:%s:%d:\t%s\n",           \
+                                  __FILE__, __func__, __LINE__, #cond),         \
+                          abort(), 0)))
 #else
-#define NOSTD_ASSERT(cond) ((void)0)
+#  define NOSTD_ASSERT(cond) ((void)0)
 #endif
 
-#define NPOS ((size_t)-1)
+/* memory-safety trap: no stdio, survives release; NOSTD_DEBUG implies it */
+#if defined(__GNUC__) || defined(__clang__)
+#  define NOSTD_TRAP() __builtin_trap()
+#elif defined(_MSC_VER)
+#  define NOSTD_TRAP() __debugbreak()
+#else
+#  define NOSTD_TRAP() abort()
+#endif
+
+#if defined(NOSTD_DEBUG) || defined(NOSTD_BOUNDS_CHECK)
+#  define NOSTD_BOUNDS(cond) ((void)((cond) || (NOSTD_TRAP(), 0)))
+#else
+#  define NOSTD_BOUNDS(cond) ((void)0)
+#endif
+
+#define NPOS      ((size_t)-1)
+#define NOSTD_NPOS NPOS
 #define SV_NUM_BUF_MAX 64
 
-#define len(c) ((c).len)
-#define cap(c) ((c).cap)
-#define data(c) ((c).data)
-#define at(c, i) *(NOSTD_ASSERT((size_t)(i) < (c).len), (c).data + (i))
+/* Checked element access (lvalue). Active under NOSTD_DEBUG or NOSTD_BOUNDS_CHECK. */
+#define nostd_at(c, i) \
+    (*(NOSTD_BOUNDS((size_t)(i) < (c).len), (c).data + (i)))
 
 typedef const char *err_t;
 extern const err_t MEMORY_ALLOC_ERROR;
@@ -132,34 +149,40 @@ NOSTD_API int arrreserve_impl(void *arr, size_t elem, alc_t *alc, size_t cap,
     arrreserve_impl((arr), sizeof(*(arr)->data), (arr)->alc,                   \
                     (arr)->len + (count), (err))
 
-#define __VSEL3(_1, _2, _3, NAME, ...) NAME
-#define __VSEL4(_1, _2, _3, _4, NAME, ...) NAME
-#define __VSEL5(_1, _2, _3, _4, _5, NAME, ...) NAME
+/* --- internal dispatch helpers (nostd_ prefix = private API) ------------- */
 
-#define __arrpush2(a, v)                                                       \
-    (NOSTD_ASSERT((a)->len < (a)->cap), (a)->data[(a)->len++] = (v))
-#define __arrpush3(a, v, err)                                                  \
+#define NOSTD_VSEL3(_1, _2, _3, NAME, ...) NAME
+#define NOSTD_VSEL4(_1, _2, _3, _4, NAME, ...) NAME
+#define NOSTD_VSEL5(_1, _2, _3, _4, _5, NAME, ...) NAME
+
+/* arrpush(a, v)       — pre-reserved fast path; NOSTD_BOUNDS checks capacity */
+/* arrpush(a, v, err)  — safe path; grows via arrreserve                      */
+#define nostd_arrpush2(a, v)                                                  \
+    (NOSTD_BOUNDS((a)->len < (a)->cap), (a)->data[(a)->len++] = (v))
+#define nostd_arrpush3(a, v, err)                                             \
     (arrreserve_impl((a), sizeof(*(a)->data), (a)->alc, (a)->len + 1,          \
                      (err)) &&                                                 \
      ((a)->data[(a)->len++] = (v), 1))
-#define arrpush(...) __VSEL3(__VA_ARGS__, __arrpush3, __arrpush2)(__VA_ARGS__)
+#define arrpush(...) NOSTD_VSEL3(__VA_ARGS__, nostd_arrpush3, nostd_arrpush2)(__VA_ARGS__)
 
-#define arrpop(a) (NOSTD_ASSERT((a)->len > 0), (a)->data[--(a)->len])
+#define arrpop(a) (NOSTD_BOUNDS((a)->len > 0), (a)->data[--(a)->len])
 #define arrfree(a)                                                             \
     do {                                                                       \
         alcfree((a)->alc, (a)->data);                                          \
-        *(a) = (typeof(*(a))){0};                                              \
+        *(a) = (__typeof__(*(a))){0};                                          \
     } while (0)
 
-#define __arrins3(arr, idx, val)                                               \
+/* arrins(arr, idx, val)       — pre-reserved fast path */
+/* arrins(arr, idx, val, err)  — safe path             */
+#define nostd_arrins3(arr, idx, val)                                          \
     do {                                                                       \
-        NOSTD_ASSERT((arr)->len < (arr)->cap);                                 \
+        NOSTD_BOUNDS((arr)->len < (arr)->cap);                                 \
         memmove((arr)->data + (idx) + 1, (arr)->data + (idx),                  \
                 ((arr)->len - (idx)) * sizeof(*(arr)->data));                  \
         (arr)->data[(idx)] = (val);                                            \
         (arr)->len++;                                                          \
     } while (0)
-#define __arrins4(arr, idx, val, err)                                          \
+#define nostd_arrins4(arr, idx, val, err)                                     \
     do {                                                                       \
         if (arrreserve_impl((arr), sizeof(*(arr)->data), (arr)->alc,           \
                             (arr)->len + 1, (err))) {                          \
@@ -169,17 +192,19 @@ NOSTD_API int arrreserve_impl(void *arr, size_t elem, alc_t *alc, size_t cap,
             (arr)->len++;                                                      \
         }                                                                      \
     } while (0)
-#define arrins(...) __VSEL4(__VA_ARGS__, __arrins4, __arrins3)(__VA_ARGS__)
+#define arrins(...) NOSTD_VSEL4(__VA_ARGS__, nostd_arrins4, nostd_arrins3)(__VA_ARGS__)
 
-#define __arrinsn4(arr, idx, vals, n)                                          \
+/* arrinsn(arr, idx, vals, n)       — pre-reserved fast path */
+/* arrinsn(arr, idx, vals, n, err)  — safe path             */
+#define nostd_arrinsn4(arr, idx, vals, n)                                     \
     do {                                                                       \
-        NOSTD_ASSERT((arr)->len + (n) <= (arr)->cap);                          \
+        NOSTD_BOUNDS((arr)->len + (n) <= (arr)->cap);                          \
         memmove((arr)->data + (idx) + (n), (arr)->data + (idx),                \
                 ((arr)->len - (idx)) * sizeof(*(arr)->data));                  \
         memcpy((arr)->data + (idx), (vals), (n) * sizeof(*(arr)->data));       \
         (arr)->len += (n);                                                     \
     } while (0)
-#define __arrinsn5(arr, idx, vals, n, err)                                     \
+#define nostd_arrinsn5(arr, idx, vals, n, err)                                \
     do {                                                                       \
         if (arrreserve_impl((arr), sizeof(*(arr)->data), (arr)->alc,           \
                             (arr)->len + (n), (err))) {                        \
@@ -189,7 +214,7 @@ NOSTD_API int arrreserve_impl(void *arr, size_t elem, alc_t *alc, size_t cap,
             (arr)->len += (n);                                                 \
         }                                                                      \
     } while (0)
-#define arrinsn(...) __VSEL5(__VA_ARGS__, __arrinsn5, __arrinsn4)(__VA_ARGS__)
+#define arrinsn(...) NOSTD_VSEL5(__VA_ARGS__, nostd_arrinsn5, nostd_arrinsn4)(__VA_ARGS__)
 
 #define arrdel(arr, i)                                                         \
     do {                                                                       \
@@ -202,7 +227,7 @@ NOSTD_API int arrreserve_impl(void *arr, size_t elem, alc_t *alc, size_t cap,
         (arr)->data[idx] = (arr)->data[--(arr)->len];                          \
     } while (0)
 
-// String View (sv)
+/* --- String View (sv) ----------------------------------------------------- */
 
 typedef struct sv {
     size_t len;
@@ -250,7 +275,7 @@ NOSTD_API float sv2f(sv_t sv, err_t *err);
 NOSTD_API double sv2d(sv_t sv, err_t *err);
 NOSTD_API uint64_t svhash(const void *data, size_t size);
 
-/* String Buffer (sb) */
+/* --- String Buffer (sb) --------------------------------------------------- */
 
 typedef arr_t(char) sb_t;
 
@@ -289,7 +314,7 @@ typedef struct {
     size_t cap;
     size_t len;
     size_t *slots;
-} __hmhdr_t;
+} nostd_hmhdr_t;
 
 #define hm1_t(T)                                                               \
     struct {                                                                   \
@@ -324,36 +349,57 @@ typedef struct {
     size_t dsize;
     size_t ksize;
     size_t voffset;
-} __hmdlayout_t;
-#define __HMDLAYOUT(hm)                                                        \
-    ((__hmdlayout_t){sizeof(*(hm)->data), sizeof((hm)->data->key),             \
-                     offsetof(typeof(*(hm)->data), val)})
+} nostd_hmdlayout_t;
+#define NOSTD_HMDLAYOUT(hm)                                                   \
+    ((nostd_hmdlayout_t){sizeof(*(hm)->data), sizeof((hm)->data->key),        \
+                          offsetof(__typeof__(*(hm)->data), val)})
 
-NOSTD_API void *hmput_impl(void *hm, void *key, __hmdlayout_t layout,
+NOSTD_API void *hmput_impl(void *hm, void *key, nostd_hmdlayout_t layout,
                            err_t *err);
-NOSTD_API void *hmfind_impl(void *hm, void *key, __hmdlayout_t layout);
-NOSTD_API void hmdel_impl(void *hm, void *key, __hmdlayout_t layout);
-NOSTD_API int hmreserve_impl(void *hm, __hmdlayout_t layout, size_t n,
+NOSTD_API void *hmfind_impl(void *hm, void *key, nostd_hmdlayout_t layout);
+NOSTD_API void hmdel_impl(void *hm, void *key, nostd_hmdlayout_t layout);
+NOSTD_API int hmreserve_impl(void *hm, nostd_hmdlayout_t layout, size_t n,
                               err_t *err);
 
-#define __TADDROF(T, v) ((T[1]){(v)})
+#define NOSTD_TADDROF(T, v) ((T[1]){(v)})
 
 #define hmfind(hm, k_)                                                         \
-    (typeof(&(hm)->data->val))hmfind_impl(                                     \
-        (hm), __TADDROF(typeof((hm)->data->key), k_), __HMDLAYOUT(hm))
+    (__typeof__(&(hm)->data->val))hmfind_impl(                                 \
+        (hm), NOSTD_TADDROF(__typeof__((hm)->data->key), k_),                 \
+        NOSTD_HMDLAYOUT(hm))
 
+/* Invalidates all pointers/references into hm->data (may grow the table). */
 #define hmput(hm, k_, err_)                                                    \
-    ((typeof(&(hm)->data->val))hmput_impl(                                     \
-        (hm), __TADDROF(typeof((hm)->data->key), k_), __HMDLAYOUT(hm),         \
-        (err_)))
+    ((__typeof__(&(hm)->data->val))hmput_impl(                                 \
+        (hm), NOSTD_TADDROF(__typeof__((hm)->data->key), k_),                 \
+        NOSTD_HMDLAYOUT(hm), (err_)))
 
+/* Invalidates all pointers/references into hm->data (swap-with-last move). */
 #define hmdel(hm, k_)                                                          \
-    hmdel_impl((hm), __TADDROF(typeof((hm)->data->key), k_), __HMDLAYOUT(hm))
+    hmdel_impl((hm), NOSTD_TADDROF(__typeof__((hm)->data->key), k_),          \
+               NOSTD_HMDLAYOUT(hm))
 
-#define hmreserve(hm, n, err) hmreserve_impl((hm), __HMDLAYOUT(hm), (n), (err))
+#define hmreserve(hm, n, err) hmreserve_impl((hm), NOSTD_HMDLAYOUT(hm), (n), (err))
 
-#define hmforeach(it, hm)                                                      \
-    for (typeof((hm)->data)(it) = (hm)->data; it < &(hm)->data[(hm)->len]; it++)
+/*
+ * Iteration: hm stores entries dense in data[0..len), so a plain index loop
+ * is idiomatic and safe. Use this pattern:
+ *
+ *   for (size_t i = 0; i < hm.len; i++) {
+ *       hm.data[i].key; hm.data[i].val;
+ *   }
+ *
+ * Safe deletion during iteration (hmdel swap-with-last — do NOT increment i):
+ *
+ *   for (size_t i = 0; i < hm.len; ) {
+ *       if (want_delete(&hm.data[i].key))
+ *           hmdel(&hm, hm.data[i].key);
+ *       else
+ *           i++;
+ *   }
+ *
+ * WARNING: both hmput AND hmdel invalidate all pointers into hm.data.
+ */
 
 #define hmclear(hm)                                                            \
     do {                                                                       \
@@ -365,7 +411,7 @@ NOSTD_API int hmreserve_impl(void *hm, __hmdlayout_t layout, size_t n,
 #define hmfree(hm)                                                             \
     do {                                                                       \
         alcfree((hm)->alc, (hm)->data);                                        \
-        *(hm) = (typeof(*(hm))){0};                                            \
+        *(hm) = (__typeof__(*(hm))){0};                                        \
     } while (0)
 
 #ifdef NOSTDLIB_IMPLEMENTATION
@@ -661,33 +707,29 @@ NOSTD_API sv_t svtokrp(sv_t *sv, svcpred_t pred) {
     return tok;
 }
 
+/* Accumulates as a negative magnitude to cover INT_MIN without overflow.
+ * C99 truncates-toward-zero division, so the threshold check is exact. */
 NOSTD_API int sv2i(sv_t sv, err_t *err) {
     *err = NULL;
-    if (sv.len == 0) {
-        *err = sv_PARSE_ERROR;
-        return 0;
-    }
+    if (sv.len == 0) { *err = sv_PARSE_ERROR; return 0; }
     int sign = 1;
     size_t i = 0;
-    if (sv.data[0] == '-') {
-        sign = -1;
-        i++;
-    } else if (sv.data[0] == '+') {
-        i++;
-    }
-    if (i == sv.len) {
-        *err = sv_PARSE_ERROR;
-        return 0;
-    }
+    if (sv.data[0] == '-') { sign = -1; i++; }
+    else if (sv.data[0] == '+') { i++; }
+    if (i == sv.len) { *err = sv_PARSE_ERROR; return 0; }
+
     int result = 0;
     for (; i < sv.len; i++) {
-        if (sv.data[i] < '0' || sv.data[i] > '9') {
-            *err = sv_PARSE_ERROR;
-            return 0;
-        }
-        result = result * 10 + (sv.data[i] - '0');
+        if (sv.data[i] < '0' || sv.data[i] > '9') { *err = sv_PARSE_ERROR; return 0; }
+        int d = sv.data[i] - '0';
+        if (result < (INT_MIN + d) / 10) { *err = sv_PARSE_ERROR; return 0; }
+        result = result * 10 - d;
     }
-    return sign * result;
+    if (sign == 1) {
+        if (result == INT_MIN) { *err = sv_PARSE_ERROR; return 0; }
+        result = -result;
+    }
+    return result;
 }
 
 NOSTD_API float sv2f(sv_t sv, err_t *err) {
@@ -735,9 +777,9 @@ NOSTD_API uint64_t svhash(const void *data, size_t size) {
 /* --- hashmap impl --------------------------------------------------------- */
 
 typedef struct {
-    __hmhdr_t hdr;
+    nostd_hmhdr_t hdr;
     void *data;
-} __hmvoid_t;
+} nostd_hmvoid_t;
 
 uint64_t fnv1ahash(const void *data, size_t size) {
     const uint8_t *bytes = (const uint8_t *)data;
@@ -784,8 +826,8 @@ const hmops_t hmopssv   = { svhash,     svcmp     };
 const hmops_t hmopsu64  = { hmhashu64,  hmcmpu64  };
 const hmops_t hmopscstr = { hmhashcstr, hmcmpcstr };
 
-static void hm_rebuild(__hmvoid_t *h, __hmdlayout_t dlayout) {
-    __hmhdr_t *hdr = &h->hdr;
+static void hm_rebuild(nostd_hmvoid_t *h, nostd_hmdlayout_t dlayout) {
+    nostd_hmhdr_t *hdr = &h->hdr;
     void *data = h->data;
     for (size_t i = 0; i < hdr->cap; i++)
         hdr->slots[i] = NPOS;
@@ -798,8 +840,8 @@ static void hm_rebuild(__hmvoid_t *h, __hmdlayout_t dlayout) {
     }
 }
 
-static int __hmgrow(__hmvoid_t *h, __hmdlayout_t dlayout) {
-    __hmhdr_t *hdr = &h->hdr;
+static int nostd_hmgrow(nostd_hmvoid_t *h, nostd_hmdlayout_t dlayout) {
+    nostd_hmhdr_t *hdr = &h->hdr;
     size_t newcap = hdr->cap ? hdr->cap * 2 : HM_INITCAP;
     size_t slots_off =
         (newcap * dlayout.dsize + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1);
@@ -816,35 +858,36 @@ static int __hmgrow(__hmvoid_t *h, __hmdlayout_t dlayout) {
 
 typedef struct {
     size_t offset;
-    size_t __i;
-    size_t __cap;
-} __hmprobe_t;
+    size_t iter_;
+    size_t cap_;
+} nostd_hmprobe_t;
 
-static inline __hmprobe_t __hmprobe(uint64_t hash, size_t cap) {
-    return (__hmprobe_t){
+static inline nostd_hmprobe_t nostd_hmprobe_make(uint64_t hash, size_t cap) {
+    return (nostd_hmprobe_t){
         .offset = hash % cap,
-        .__i = 0,
-        .__cap = cap,
+        .iter_ = 0,
+        .cap_ = cap,
     };
 }
-static inline int __hmprobenext(__hmprobe_t *it) {
-    if (it->__i >= it->__cap)
+static inline int nostd_hmprobenext(nostd_hmprobe_t *it) {
+    if (it->iter_ >= it->cap_)
         return 0;
-    if (it->__i > 0)
-        it->offset = (it->offset + 1) % it->__cap;
-    it->__i++;
+    if (it->iter_ > 0)
+        it->offset = (it->offset + 1) % it->cap_;
+    it->iter_++;
     return 1;
 }
 
-NOSTD_API void *hmfind_impl(void *hm, void *key, __hmdlayout_t dlayout) {
-    __hmvoid_t *h = (__hmvoid_t *)hm;
-    __hmhdr_t *hdr = &h->hdr;
+NOSTD_API void *hmfind_impl(void *hm, void *key, nostd_hmdlayout_t dlayout) {
+    nostd_hmvoid_t *h = (nostd_hmvoid_t *)hm;
+    nostd_hmhdr_t *hdr = &h->hdr;
     void *data = h->data;
     if (!hdr->cap)
         return NULL;
 
     uint64_t hash = hdr->ops.hash(key, dlayout.ksize);
-    for (__hmprobe_t it = __hmprobe(hash, hdr->cap); __hmprobenext(&it);) {
+    for (nostd_hmprobe_t it = nostd_hmprobe_make(hash, hdr->cap);
+         nostd_hmprobenext(&it);) {
         size_t idx = hdr->slots[it.offset];
         if (idx == NPOS)
             return NULL;
@@ -857,10 +900,10 @@ NOSTD_API void *hmfind_impl(void *hm, void *key, __hmdlayout_t dlayout) {
     return NULL;
 }
 
-NOSTD_API void *hmput_impl(void *hm, void *key, __hmdlayout_t dlayout,
+NOSTD_API void *hmput_impl(void *hm, void *key, nostd_hmdlayout_t dlayout,
                            err_t *err) {
-    __hmvoid_t *h = (__hmvoid_t *)hm;
-    __hmhdr_t *hdr = &h->hdr;
+    nostd_hmvoid_t *h = (nostd_hmvoid_t *)hm;
+    nostd_hmhdr_t *hdr = &h->hdr;
     void *data = h->data;
     if (err != NULL)
         *err = NULL;
@@ -870,7 +913,8 @@ NOSTD_API void *hmput_impl(void *hm, void *key, __hmdlayout_t dlayout,
 
     size_t tomb = NPOS;
     if (hdr->cap > 0) {
-        for (__hmprobe_t it = __hmprobe(hash, hdr->cap); __hmprobenext(&it);) {
+        for (nostd_hmprobe_t it = nostd_hmprobe_make(hash, hdr->cap);
+             nostd_hmprobenext(&it);) {
             size_t idx = hdr->slots[it.offset];
             if (idx == NPOS)
                 break;
@@ -887,7 +931,7 @@ NOSTD_API void *hmput_impl(void *hm, void *key, __hmdlayout_t dlayout,
     }
 
     if (hdr->cap == 0 || (hdr->len + 1 + tombs) * 4 > hdr->cap * 3) {
-        if (!__hmgrow(h, dlayout)) {
+        if (!nostd_hmgrow(h, dlayout)) {
             if (err != NULL)
                 *err = MEMORY_ALLOC_ERROR;
             return NULL;
@@ -897,7 +941,8 @@ NOSTD_API void *hmput_impl(void *hm, void *key, __hmdlayout_t dlayout,
 
     size_t ins = tomb;
     if (ins == NPOS) {
-        for (__hmprobe_t it = __hmprobe(hash, hdr->cap); __hmprobenext(&it);) {
+        for (nostd_hmprobe_t it = nostd_hmprobe_make(hash, hdr->cap);
+             nostd_hmprobenext(&it);) {
             ins = it.offset;
             size_t idx = hdr->slots[it.offset];
             if (idx == NPOS || idx == HM_TOMB)
@@ -913,9 +958,9 @@ NOSTD_API void *hmput_impl(void *hm, void *key, __hmdlayout_t dlayout,
     return (char *)entry + dlayout.voffset;
 }
 
-NOSTD_API void hmdel_impl(void *hm, void *key, __hmdlayout_t dlayout) {
-    __hmvoid_t *h = (__hmvoid_t *)hm;
-    __hmhdr_t *hdr = &h->hdr;
+NOSTD_API void hmdel_impl(void *hm, void *key, nostd_hmdlayout_t dlayout) {
+    nostd_hmvoid_t *h = (nostd_hmvoid_t *)hm;
+    nostd_hmhdr_t *hdr = &h->hdr;
     void *data = h->data;
 
     if (!hdr->cap)
@@ -924,7 +969,8 @@ NOSTD_API void hmdel_impl(void *hm, void *key, __hmdlayout_t dlayout) {
     size_t idx;
     int found = 0;
     uint64_t hash = hdr->ops.hash(key, dlayout.ksize);
-    for (__hmprobe_t it = __hmprobe(hash, hdr->cap); __hmprobenext(&it);) {
+    for (nostd_hmprobe_t it = nostd_hmprobe_make(hash, hdr->cap);
+         nostd_hmprobenext(&it);) {
         idx = hdr->slots[it.offset];
         if (idx == NPOS)
             return;
@@ -950,7 +996,8 @@ NOSTD_API void hmdel_impl(void *hm, void *key, __hmdlayout_t dlayout) {
     memcpy(dst, src, dlayout.dsize);
 
     uint64_t last_hash = hdr->ops.hash(dst, dlayout.ksize);
-    for (__hmprobe_t it = __hmprobe(last_hash, hdr->cap); __hmprobenext(&it);) {
+    for (nostd_hmprobe_t it = nostd_hmprobe_make(last_hash, hdr->cap);
+         nostd_hmprobenext(&it);) {
         if (hdr->slots[it.offset] == last) {
             hdr->slots[it.offset] = idx;
             return;
@@ -958,13 +1005,13 @@ NOSTD_API void hmdel_impl(void *hm, void *key, __hmdlayout_t dlayout) {
     }
 }
 
-NOSTD_API int hmreserve_impl(void *hm, __hmdlayout_t dlayout, size_t n,
+NOSTD_API int hmreserve_impl(void *hm, nostd_hmdlayout_t dlayout, size_t n,
                               err_t *err) {
-    __hmvoid_t *h = (__hmvoid_t *)hm;
+    nostd_hmvoid_t *h = (nostd_hmvoid_t *)hm;
     if (err != NULL)
         *err = NULL;
     while (h->hdr.cap == 0 || h->hdr.cap * 3 < n * 4) {
-        if (!__hmgrow(h, dlayout)) {
+        if (!nostd_hmgrow(h, dlayout)) {
             if (err != NULL)
                 *err = MEMORY_ALLOC_ERROR;
             return 0;
@@ -973,7 +1020,7 @@ NOSTD_API int hmreserve_impl(void *hm, __hmdlayout_t dlayout, size_t n,
     return 1;
 }
 
-/* --- sb impl ------------------------------------------------------------ */
+/* --- sb impl -------------------------------------------------------------- */
 
 const err_t sb_FORMAT_ERROR = "Could not format string";
 
@@ -1098,5 +1145,5 @@ NOSTD_API void sbfree(sb_t *sb) {
     *sb = (sb_t){0};
 }
 
-#endif // NOSTDLIB_IMPLEMENTATION
-#endif // NOSTDLIB_H
+#endif /* NOSTDLIB_IMPLEMENTATION */
+#endif /* NOSTDLIB_H */

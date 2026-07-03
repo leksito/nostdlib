@@ -2,6 +2,10 @@
 
 **nostdlib** ("not THE standard library") — a single-header C library providing generic dynamic arrays, string views, string builders, and hashmaps with pluggable allocators.
 
+## Requirements
+
+C99 or later with `__typeof__` support. Works with GCC and Clang in any `-std=` mode, and with MSVC in C mode (requires `/Zc:preprocessor`). C23 is also supported.
+
 ## Usage
 
 In **one** translation unit, define `NOSTDLIB_IMPLEMENTATION` before including:
@@ -16,6 +20,16 @@ In all other files, include normally:
 ```c
 #include "nostdlib.h"
 ```
+
+### Build flags
+
+| Flag | Effect | Default |
+|------|--------|---------|
+| `NOSTD_DEBUG` | printf diagnostics (`<stdio.h>`) + bounds traps | off |
+| `NOSTD_BOUNDS_CHECK` | bounds traps on hot paths, no stdio; hardened release | off |
+| `NOSTD_API` | linkage/visibility of public functions | empty |
+
+The default build has no checks and no extra includes. Enable `-DNOSTD_BOUNDS_CHECK` for a hardened release build that traps on out-of-bounds access without pulling in stdio.
 
 ## Modules
 
@@ -41,11 +55,13 @@ err_t err = NULL;
 arrpush(&arr, 42, &err);
 arrpush(&arr, 99, &err);
 
-for (size_t i = 0; i < len(arr); i++)
-    printf("%d\n", at(arr, i));
+for (size_t i = 0; i < arr.len; i++)
+    printf("%d\n", arr.data[i]);
 
 arrfree(&arr);
 ```
+
+`arrpush(a, v)` without `err` is a fast pre-reserved path — call `arrreserve` or `arrroom` first. `arrpush(a, v, &err)` grows automatically. `nostd_at(arr, i)` provides bounds-checked element access (lvalue) under `NOSTD_DEBUG` or `NOSTD_BOUNDS_CHECK`.
 
 ### String view — `sv_t`
 
@@ -53,11 +69,13 @@ Non-owning slice of a string. No allocation, no NUL terminator required.
 
 ```c
 sv_t s = sv("hello, world");
-sv_t word = svtok(&s, ',');          // "hello"
-sv_t trimmed = svtrim(word);         // "hello"
+sv_t word = svtok(&s, ',');     // "hello"
+sv_t trimmed = svtrim(word);    // "hello"
 
 printf(SVFMT "\n", SVARG(trimmed));
 ```
+
+**Lifetime:** `sv_t` does not own its backing memory. When used as a hashmap key, the backing string must outlive the map entry. Watch out for `sb_t` keys — a realloc (triggered by any push) invalidates all views into the builder.
 
 ### String builder — `sb_t`
 
@@ -91,10 +109,25 @@ err_t err = NULL;
 
 int *n = hmfind(&hm, sv("apple"));  // *n == 2
 
-hmforeach(it, &hm)
-    printf(SVFMT ": %d\n", SVARG(it->key), it->val);
+for (size_t i = 0; i < hm.len; i++)
+    printf(SVFMT ": %d\n", SVARG(hm.data[i].key), hm.data[i].val);
 
 hmfree(&hm);
+```
+
+Entries are stored densely in `data[0..len)`, so iteration is a plain index loop.
+
+**Pointer invalidation:** both `hmput` and `hmdel` invalidate all pointers and references into `hm.data` — `hmput` may grow the table, `hmdel` swaps the deleted entry with the last one. Do not hold pointers across these calls.
+
+Safe deletion during iteration (do not increment `i` after a delete, since the last entry moved into position `i`):
+
+```c
+for (size_t i = 0; i < hm.len; ) {
+    if (want_delete(&hm.data[i].key))
+        hmdel(&hm, hm.data[i].key);
+    else
+        i++;
+}
 ```
 
 ## Build & test

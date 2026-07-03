@@ -256,30 +256,19 @@ TEST(arrfree_zeroes) {
     ASSERT(arr.len == 0);
 }
 
-/* --- generic accessors ---------------------------------------------------- */
+/* --- nostd_at ------------------------------------------------------------- */
 
-TEST(generic_len_cap_data) {
-    alc_t *gpa = alclibc();
-    arr_int_t arr = {0};
-    arrinit(&arr, gpa);
-    arrpush(&arr, 42);
-
-    ASSERT(len(arr) == 1);
-    ASSERT(cap(arr) == ARR_INIT_CAP);
-    ASSERT(data(arr)[0] == 42);
-
-    arrfree(&arr);
-}
-
-TEST(generic_at) {
+TEST(nostd_at_read_write) {
     alc_t *gpa = alclibc();
     arr_int_t arr = {0};
     arrinit(&arr, gpa);
     arrpush(&arr, 10);
     arrpush(&arr, 20);
 
-    ASSERT(at(arr, 0) == 10);
-    ASSERT(at(arr, 1) == 20);
+    ASSERT(nostd_at(arr, 0) == 10);
+    ASSERT(nostd_at(arr, 1) == 20);
+    nostd_at(arr, 0) = 99;
+    ASSERT(arr.data[0] == 99);
 
     arrfree(&arr);
 }
@@ -441,9 +430,21 @@ TEST(sv2i) {
     ASSERT(sv2i(sv("42"), &err) == 42 && err == NULL);
     ASSERT(sv2i(sv("-7"), &err) == -7 && err == NULL);
     ASSERT(sv2i(sv("+3"), &err) == 3 && err == NULL);
+    ASSERT(sv2i(sv("0"), &err) == 0 && err == NULL);
     sv2i(sv("abc"), &err);
     ASSERT(err == sv_PARSE_ERROR);
     sv2i(sv(""), &err);
+    ASSERT(err == sv_PARSE_ERROR);
+    sv2i(sv("-"), &err);
+    ASSERT(err == sv_PARSE_ERROR);
+    sv2i(sv("+"), &err);
+    ASSERT(err == sv_PARSE_ERROR);
+    /* INT_MIN must parse correctly; INT_MIN - 1 must fail */
+    char int_min_str[32], overflow_str[32];
+    snprintf(int_min_str, sizeof(int_min_str), "%d", INT_MIN);
+    snprintf(overflow_str, sizeof(overflow_str), "%lld", (long long)INT_MIN - 1);
+    ASSERT(sv2i(svcstr(int_min_str), &err) == INT_MIN && err == NULL);
+    sv2i(svcstr(overflow_str), &err);
     ASSERT(err == sv_PARSE_ERROR);
 }
 
@@ -585,9 +586,9 @@ TEST(hm_foreach) {
     *hmput(&hm, (uint64_t){3}, NULL) = 30;
 
     int count = 0, sum = 0;
-    hmforeach(it, &hm) {
+    for (size_t i = 0; i < hm.len; i++) {
         count++;
-        sum += it->val;
+        sum += hm.data[i].val;
     }
     ASSERT(count == 3);
     ASSERT(sum == 60);
@@ -611,9 +612,9 @@ TEST(hm_len_cap_data) {
     hminit(&hm, hmopssv, alclibc());
     *hmput(&hm, sv("a"), NULL) = 1;
     *hmput(&hm, sv("b"), NULL) = 2;
-    ASSERT(len(hm) == 2);
-    ASSERT(cap(hm) > 0);
-    ASSERT(data(hm) != NULL);
+    ASSERT(hm.len == 2);
+    ASSERT(hm.cap > 0);
+    ASSERT(hm.data != NULL);
     hmfree(&hm);
 }
 
@@ -1011,9 +1012,8 @@ int main(void) {
     printf("arrfree:\n");
     RUN(arrfree_zeroes);
 
-    printf("generic accessors:\n");
-    RUN(generic_len_cap_data);
-    RUN(generic_at);
+    printf("nostd_at:\n");
+    RUN(nostd_at_read_write);
 
     printf("sv constructors:\n");
     RUN(sv_literal);
