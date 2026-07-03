@@ -48,6 +48,100 @@ TEST(alc_ops) {
 
 TEST(alcfree_null_alc) { alcfree(NULL, NULL); }
 
+/* --- bump allocator ------------------------------------------------------- */
+
+TEST(alcbump_basic) {
+    char buf[256];
+    alcbump_t bump = alcbumpinit(buf, sizeof(buf));
+    alc_t *alc = alcbump2alc(&bump);
+
+    void *a = alcalloc(alc, 16);
+    ASSERT(a != NULL);
+    ASSERT(bump.len >= 16);
+
+    void *b = alcalloc(alc, 32);
+    ASSERT(b != NULL);
+    ASSERT((char *)b >= (char *)a + 16);
+
+    alcbumpreset(&bump);
+    ASSERT(bump.len == 0);
+    ASSERT(bump.last == NULL);
+}
+
+TEST(alcbump_oom) {
+    char buf[32];
+    alcbump_t bump = alcbumpinit(buf, sizeof(buf));
+    alc_t *alc = alcbump2alc(&bump);
+
+    ASSERT(alcalloc(alc, 16) != NULL);
+    ASSERT(alcalloc(alc, 16) != NULL);
+    ASSERT(alcalloc(alc, 1) == NULL); /* exhausted */
+}
+
+TEST(alcbump_realloc_inplace) {
+    char buf[256];
+    alcbump_t bump = alcbumpinit(buf, sizeof(buf));
+    alc_t *alc = alcbump2alc(&bump);
+
+    void *p = alcalloc(alc, 16);
+    ASSERT(p != NULL);
+    size_t len_after_first = bump.len;
+
+    void *p2 = alcrealloc(alc, p, 32);
+    ASSERT(p2 == p);             /* in-place: same pointer */
+    ASSERT(bump.len > len_after_first);
+    ASSERT(bump.len <= len_after_first + 32);
+}
+
+TEST(alcbump_realloc_nonlast) {
+    char buf[256];
+    alcbump_t bump = alcbumpinit(buf, sizeof(buf));
+    alc_t *alc = alcbump2alc(&bump);
+
+    void *a = alcalloc(alc, 16);
+    memset(a, 0xAB, 16);
+    alcalloc(alc, 8); /* push another alloc so `a` is no longer last */
+
+    void *a2 = alcrealloc(alc, a, 32);
+    ASSERT(a2 != NULL);
+    ASSERT(a2 != a);  /* had to move */
+    ASSERT(((char *)a2)[0] == (char)0xAB); /* data copied */
+}
+
+TEST(alcbump_reset_reuse) {
+    char buf[64];
+    alcbump_t bump = alcbumpinit(buf, sizeof(buf));
+    alc_t *alc = alcbump2alc(&bump);
+
+    void *p1 = alcalloc(alc, 32);
+    ASSERT(p1 != NULL);
+    alcbumpreset(&bump);
+
+    void *p2 = alcalloc(alc, 32);
+    ASSERT(p2 == p1); /* same start after reset */
+}
+
+TEST(alcbump_with_arr) {
+    char buf[1024];
+    alcbump_t bump = alcbumpinit(buf, sizeof(buf));
+    alc_t *alc = alcbump2alc(&bump);
+
+    typedef arr_t(int) arr_int_t;
+    arr_int_t arr = {0};
+    arr.alc = alc;
+
+    err_t err = NULL;
+    for (int i = 0; i < 20; i++)
+        arrpush(&arr, i, &err);
+    ASSERT(err == NULL);
+    ASSERT(arr.len == 20);
+    for (int i = 0; i < 20; i++)
+        ASSERT(arr.data[i] == i);
+
+    /* arr memory lives in buf — no free needed, just reset */
+    alcbumpreset(&bump);
+}
+
 /* --- arrinit -------------------------------------------------------------- */
 
 TEST(arrinit) {
@@ -983,6 +1077,14 @@ int main(void) {
     RUN(alclibc);
     RUN(alc_ops);
     RUN(alcfree_null_alc);
+
+    printf("bump allocator:\n");
+    RUN(alcbump_basic);
+    RUN(alcbump_oom);
+    RUN(alcbump_realloc_inplace);
+    RUN(alcbump_realloc_nonlast);
+    RUN(alcbump_reset_reuse);
+    RUN(alcbump_with_arr);
 
     printf("arrinit:\n");
     RUN(arrinit);

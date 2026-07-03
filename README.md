@@ -35,12 +35,32 @@ The default build has no checks and no extra includes. Enable `-DNOSTD_BOUNDS_CH
 
 ### Allocator — `alc_t`
 
-Pluggable allocator interface. Use `alclibc()` for the standard malloc/realloc/free allocator.
+Pluggable allocator interface. Pass an `alc_t *` to any data structure that allocates memory.
+
+**`alclibc()`** — standard malloc/realloc/free:
 
 ```c
 alc_t *alc = alclibc();
 void *ptr = alcalloc(alc, 64);
 alcfree(alc, ptr);
+```
+
+**`alcbump_t`** — bump (linear) allocator over a caller-supplied fixed buffer. `free` is a no-op; all memory is reclaimed at once with `alcbumpreset`. `realloc` extends in place when the pointer is the last allocation, so `arr_t` grows efficiently without wasting buffer space.
+
+```c
+char buf[4096];
+alcbump_t bump = alcbumpinit(buf, sizeof(buf));
+alc_t *alc = alcbump2alc(&bump);
+
+/* use alc with any data structure */
+typedef arr_t(int) ints_t;
+ints_t arr = {0};
+arrinit(&arr, alc);
+err_t err = NULL;
+for (int i = 0; i < 100; i++)
+    arrpush(&arr, i, &err);
+
+alcbumpreset(&bump); /* reclaim everything at once */
 ```
 
 ### Dynamic array — `arr_t(T)`

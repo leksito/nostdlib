@@ -125,6 +125,25 @@ NOSTD_API alc_t *alclibc(void);
 #define alcrealloc(alc, ptr, sz) alcrealloc_impl((alc), (ptr), (sz))
 #define alcfree(alc, ptr) alcfree_impl((alc), (ptr))
 
+/* Bump (linear) allocator over a caller-supplied fixed buffer.
+ *
+ * free   — no-op; memory is reclaimed only via alcbumpreset.
+ * realloc — in-place if the pointer is the last allocation (cursor just
+ *            moves forward); otherwise a fresh alloc + memcpy.
+ * alloc  — aligned to alignof(max_align_t); returns NULL on exhaustion.
+ */
+typedef struct {
+    char   *data; /* backing buffer                        */
+    size_t  cap;  /* total buffer size in bytes            */
+    size_t  len;  /* bytes consumed (cursor = data + len)  */
+    void   *last; /* start of the most recent allocation   */
+    alc_t   alc;
+} alcbump_t;
+
+NOSTD_API alcbump_t alcbumpinit(void *ptr, size_t size);
+NOSTD_API alc_t *alcbump2alc(alcbump_t *bump);
+NOSTD_API void alcbumpreset(alcbump_t *bump);
+
 #define arr_t(T)                                                               \
     struct {                                                                   \
         alc_t *alc;                                                            \
@@ -447,6 +466,82 @@ NOSTD_API alc_t *alclibc(void) {
                         .realloc = gpa_realloc,
                         .free = gpa_free};
     return &gpa;
+}
+
+/* --- bump allocator ------------------------------------------------------- */
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#  define NOSTD_BUMP_ALIGN _Alignof(max_align_t)
+#else
+#  define NOSTD_BUMP_ALIGN (sizeof(void *) > sizeof(double) ? sizeof(void *) : sizeof(double))
+#endif
+
+static size_t bump_align_up(size_t n) {
+    return (n + NOSTD_BUMP_ALIGN - 1) & ~(NOSTD_BUMP_ALIGN - 1);
+}
+
+static void *bump_alloc(void *ctx, size_t sz) {
+    alcbump_t *b = (alcbump_t *)ctx;
+    size_t aligned = bump_align_up(sz);
+    if (aligned < sz || b->len + aligned > b->cap)
+        return NULL;
+    void *ptr = b->data + b->len;
+    b->len += aligned;
+    b->last = ptr;
+    return ptr;
+}
+
+static void *bump_realloc(void *ctx, void *ptr, size_t sz) {
+    alcbump_t *b = (alcbump_t *)ctx;
+    if (ptr == NULL)
+        return bump_alloc(ctx, sz);
+    size_t aligned = bump_align_up(sz);
+    if (aligned < sz)
+        return NULL;
+    if (ptr == b->last) {
+        /* last allocation: recover its space and re-bump */
+        size_t last_off = (char *)b->last - b->data;
+        if (last_off + aligned <= b->cap) {
+            b->len = last_off + aligned;
+            return ptr;
+        }
+        return NULL;
+    }
+    /* non-last: fresh alloc + copy */
+    void *new_ptr = bump_alloc(ctx, sz);
+    if (!new_ptr)
+        return NULL;
+    /* old size unknown — copy up to what fits in the new block */
+    size_t old_sz = (char *)b->last - (char *)ptr; /* upper bound */
+    memcpy(new_ptr, ptr, old_sz < sz ? old_sz : sz);
+    return new_ptr;
+}
+
+static void bump_free(void *ctx, void *ptr) {
+    (void)ctx;
+    (void)ptr;
+}
+
+NOSTD_API alcbump_t alcbumpinit(void *ptr, size_t size) {
+    alcbump_t b;
+    b.data = (char *)ptr;
+    b.cap  = size;
+    b.len  = 0;
+    b.last = NULL;
+    /* ctx is NULL until alcbump2alc fixes it up after the return-by-value copy */
+    b.alc  = (alc_t){.ctx = NULL, .alloc = bump_alloc,
+                     .realloc = bump_realloc, .free = bump_free};
+    return b;
+}
+
+NOSTD_API alc_t *alcbump2alc(alcbump_t *bump) {
+    bump->alc.ctx = bump;
+    return &bump->alc;
+}
+
+NOSTD_API void alcbumpreset(alcbump_t *bump) {
+    bump->len  = 0;
+    bump->last = NULL;
 }
 
 NOSTD_API void *alcalloc_impl(alc_t *alc, size_t sz) {
