@@ -26,6 +26,154 @@ static int tests_failed = 0;
         test_##name();                                                         \
     } while (0)
 
+typedef struct {
+    int value;
+    lnode_t link;
+} llitem_t;
+
+static llitem_t llitem(int v) { return (llitem_t){.value = v, .link = {0}}; }
+
+/* --- llist ------------------------------------------------------------ */
+
+TEST(llpush_order) {
+    llist_t list = {0};
+    llitem_t a = llitem(1), b = llitem(2), c = llitem(3);
+    llpush(&list, &a.link);
+    llpush(&list, &b.link);
+    llpush(&list, &c.link);
+
+    ASSERT(list.first == &a.link);
+    ASSERT(list.last == &c.link);
+    ASSERT(nostd_containerof(list.first, llitem_t, link)->value == 1);
+    ASSERT(nostd_containerof(list.first->next, llitem_t, link)->value == 2);
+    ASSERT(list.first->next->next == &c.link);
+    ASSERT(c.link.next == NULL);
+    ASSERT(a.link.prev == NULL);
+}
+
+TEST(llpushfront_order) {
+    llist_t list = {0};
+    llitem_t a = llitem(1), b = llitem(2), c = llitem(3);
+    llpushfront(&list, &a.link);
+    llpushfront(&list, &b.link);
+    llpushfront(&list, &c.link);
+
+    ASSERT(list.first == &c.link);
+    ASSERT(list.last == &a.link);
+    ASSERT(nostd_containerof(list.first, llitem_t, link)->value == 3);
+    ASSERT(list.first->next == &b.link);
+    ASSERT(list.first->next->next == &a.link);
+    ASSERT(a.link.next == NULL);
+    ASSERT(c.link.prev == NULL);
+}
+
+TEST(llins_after) {
+    llist_t list = {0};
+    llitem_t a = llitem(1), b = llitem(2), c = llitem(3), d = llitem(4);
+    llpush(&list, &a.link);
+    llpush(&list, &b.link);
+    llpush(&list, &c.link);
+
+    llins(&list, &a.link, &d.link); /* a -> d -> b -> c */
+
+    ASSERT(list.first == &a.link);
+    ASSERT(list.last == &c.link);
+    ASSERT(a.link.next == &d.link);
+    ASSERT(d.link.prev == &a.link);
+    ASSERT(d.link.next == &b.link);
+    ASSERT(b.link.prev == &d.link);
+}
+
+TEST(lldel_middle) {
+    llist_t list = {0};
+    llitem_t a = llitem(1), b = llitem(2), c = llitem(3);
+    llpush(&list, &a.link);
+    llpush(&list, &b.link);
+    llpush(&list, &c.link);
+
+    lldel(&list, &b.link); /* a -> c */
+
+    ASSERT(list.first == &a.link);
+    ASSERT(list.last == &c.link);
+    ASSERT(a.link.next == &c.link);
+    ASSERT(c.link.prev == &a.link);
+}
+
+TEST(lldel_head) {
+    llist_t list = {0};
+    llitem_t a = llitem(1), b = llitem(2);
+    llpush(&list, &a.link);
+    llpush(&list, &b.link);
+
+    lldel(&list, &a.link);
+
+    ASSERT(list.first == &b.link);
+    ASSERT(list.last == &b.link);
+    ASSERT(b.link.prev == NULL);
+}
+
+TEST(lldel_tail) {
+    llist_t list = {0};
+    llitem_t a = llitem(1), b = llitem(2);
+    llpush(&list, &a.link);
+    llpush(&list, &b.link);
+
+    lldel(&list, &b.link);
+
+    ASSERT(list.first == &a.link);
+    ASSERT(list.last == &a.link);
+    ASSERT(a.link.next == NULL);
+}
+
+TEST(lldel_only_node) {
+    llist_t list = {0};
+    llitem_t a = llitem(1);
+    llpush(&list, &a.link);
+
+    lldel(&list, &a.link);
+
+    ASSERT(list.first == NULL);
+    ASSERT(list.last == NULL);
+}
+
+TEST(llpop_returns_tail) {
+    llist_t list = {0};
+    llitem_t a = llitem(1), b = llitem(2), c = llitem(3);
+    llpush(&list, &a.link);
+    llpush(&list, &b.link);
+    llpush(&list, &c.link);
+
+    lnode_t *n = llpop(&list);
+    ASSERT(n == &c.link);
+    ASSERT(nostd_containerof(n, llitem_t, link)->value == 3);
+    ASSERT(list.last == &b.link);
+
+    ASSERT(nostd_containerof(llpop(&list), llitem_t, link)->value == 2);
+    ASSERT(nostd_containerof(llpop(&list), llitem_t, link)->value == 1);
+    ASSERT(list.first == NULL);
+    ASSERT(list.last == NULL);
+    ASSERT(llpop(&list) == NULL);
+}
+
+TEST(llpopfront_returns_head) {
+    llist_t list = {0};
+    llitem_t a = llitem(1), b = llitem(2), c = llitem(3);
+    llpush(&list, &a.link);
+    llpush(&list, &b.link);
+    llpush(&list, &c.link);
+
+    lnode_t *n = llpopfront(&list);
+    ASSERT(n == &a.link);
+    ASSERT(nostd_containerof(n, llitem_t, link)->value == 1);
+    ASSERT(list.first == &b.link);
+
+    ASSERT(nostd_containerof(llpopfront(&list), llitem_t, link)->value == 2);
+    ASSERT(nostd_containerof(llpopfront(&list), llitem_t, link)->value == 3);
+    ASSERT(list.first == NULL);
+    ASSERT(list.last == NULL);
+    ASSERT(llpopfront(&list) == NULL);
+}
+
 /* --- allocator ------------------------------------------------------------ */
 
 TEST(alclibc) {
@@ -1194,6 +1342,17 @@ int main(void) {
     RUN(sbmap);
     RUN(sbmap_full);
     RUN(sbfree_zeroes);
+
+    printf("llist:\n");
+    RUN(llpush_order);
+    RUN(llpushfront_order);
+    RUN(llins_after);
+    RUN(lldel_middle);
+    RUN(lldel_head);
+    RUN(lldel_tail);
+    RUN(lldel_only_node);
+    RUN(llpop_returns_tail);
+    RUN(llpopfront_returns_head);
 
     printf("\n%d/%d passed\n", tests_run - tests_failed, tests_run);
     return tests_failed ? 1 : 0;

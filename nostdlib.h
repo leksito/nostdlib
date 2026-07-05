@@ -433,6 +433,34 @@ NOSTD_API int hmreserve_impl(void *hm, nostd_hmdlayout_t layout, size_t n,
         *(hm) = (__typeof__(*(hm))){0};                                        \
     } while (0)
 
+/* --- Intrusive Doubly Linked List (llist) --------------------------------- */
+
+/*
+ * lnode_t carries no payload — embed it in your own struct and recover the
+ * containing object with nostd_containerof. The list owns no memory: it only
+ * links/unlinks nodes whose storage you allocate and free yourself (via any
+ * alc_t, or a stack/static lnode_t — anything whose address stays put).
+ */
+typedef struct lnode {
+    struct lnode *prev;
+    struct lnode *next;
+} lnode_t;
+
+typedef struct {
+    lnode_t *first;
+    lnode_t *last;
+} llist_t;
+
+#define nostd_containerof(ptr, type, member) \
+    ((type *)((char *)(ptr) - offsetof(type, member)))
+
+NOSTD_API void llins(llist_t *list, lnode_t *pos, lnode_t *n);
+NOSTD_API void llpush(llist_t *list, lnode_t *n);
+NOSTD_API void llpushfront(llist_t *list, lnode_t *n);
+NOSTD_API void lldel(llist_t *list, lnode_t *n);
+NOSTD_API lnode_t *llpop(llist_t *list);
+NOSTD_API lnode_t *llpopfront(llist_t *list);
+
 #ifdef NOSTDLIB_IMPLEMENTATION
 #undef NOSTDLIB_IMPLEMENTATION
 
@@ -1238,6 +1266,63 @@ NOSTD_API void sbclear(sb_t *sb) {
 NOSTD_API void sbfree(sb_t *sb) {
     alcfree_impl(sb->alc, sb->data);
     *sb = (sb_t){0};
+}
+
+/* --- Intrusive Doubly Linked List (llist) --------------------------------- */
+
+NOSTD_API void llins(llist_t *list, lnode_t *pos, lnode_t *n) {
+    n->prev = pos;
+    n->next = pos->next;
+    if (pos->next)
+        pos->next->prev = n;
+    else
+        list->last = n;
+    pos->next = n;
+}
+
+NOSTD_API void llpush(llist_t *list, lnode_t *n) {
+    n->next = NULL;
+    n->prev = list->last;
+    if (list->last)
+        list->last->next = n;
+    else
+        list->first = n;
+    list->last = n;
+}
+
+NOSTD_API void llpushfront(llist_t *list, lnode_t *n) {
+    n->prev = NULL;
+    n->next = list->first;
+    if (list->first)
+        list->first->prev = n;
+    else
+        list->last = n;
+    list->first = n;
+}
+
+NOSTD_API void lldel(llist_t *list, lnode_t *n) {
+    if (n->prev)
+        n->prev->next = n->next;
+    else
+        list->first = n->next;
+    if (n->next)
+        n->next->prev = n->prev;
+    else
+        list->last = n->prev;
+}
+
+NOSTD_API lnode_t *llpop(llist_t *list) {
+    lnode_t *n = list->last;
+    if (n)
+        lldel(list, n);
+    return n;
+}
+
+NOSTD_API lnode_t *llpopfront(llist_t *list) {
+    lnode_t *n = list->first;
+    if (n)
+        lldel(list, n);
+    return n;
 }
 
 #endif /* NOSTDLIB_IMPLEMENTATION */
