@@ -88,7 +88,7 @@ TEST(alcbump_realloc_inplace) {
     size_t len_after_first = bump.len;
 
     void *p2 = alcrealloc(alc, p, 32);
-    ASSERT(p2 == p);             /* in-place: same pointer */
+    ASSERT(p2 == p); /* in-place: same pointer */
     ASSERT(bump.len > len_after_first);
     ASSERT(bump.len <= len_after_first + 32);
 }
@@ -104,7 +104,7 @@ TEST(alcbump_realloc_nonlast) {
 
     void *a2 = alcrealloc(alc, a, 32);
     ASSERT(a2 != NULL);
-    ASSERT(a2 != a);  /* had to move */
+    ASSERT(a2 != a);                       /* had to move */
     ASSERT(((char *)a2)[0] == (char)0xAB); /* data copied */
 }
 
@@ -166,7 +166,8 @@ TEST(arrinitcap) {
     arrfree(&arr);
 }
 
-/* --- arrreserve / arrroom -------------------------------------------------- */
+/* --- arrreserve / arrroom --------------------------------------------------
+ */
 
 TEST(arrreserve_noop) {
     alc_t *gpa = alclibc();
@@ -536,7 +537,8 @@ TEST(sv2i) {
     /* INT_MIN must parse correctly; INT_MIN - 1 must fail */
     char int_min_str[32], overflow_str[32];
     snprintf(int_min_str, sizeof(int_min_str), "%d", INT_MIN);
-    snprintf(overflow_str, sizeof(overflow_str), "%lld", (long long)INT_MIN - 1);
+    snprintf(overflow_str, sizeof(overflow_str), "%lld",
+             (long long)INT_MIN - 1);
     ASSERT(sv2i(svcstr(int_min_str), &err) == INT_MIN && err == NULL);
     sv2i(svcstr(overflow_str), &err);
     ASSERT(err == sv_PARSE_ERROR);
@@ -544,8 +546,7 @@ TEST(sv2i) {
 
 TEST(sv2f) {
     err_t err = NULL;
-    ASSERT(sv2f(sv("3.14"), &err) > 3.13f &&
-           sv2f(sv("3.14"), &err) < 3.15f);
+    ASSERT(sv2f(sv("3.14"), &err) > 3.13f && sv2f(sv("3.14"), &err) < 3.15f);
     ASSERT(err == NULL);
     sv2f(sv("abc"), &err);
     ASSERT(err == sv_PARSE_ERROR);
@@ -720,12 +721,17 @@ TEST(hm_reserve) {
     ASSERT(err == NULL);
     ASSERT(hm.cap * 3 >= 100 * 4);
     size_t cap_before = hm.cap;
+    char bufs[100][8];
     for (int i = 0; i < 100; i++) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", i);
-        *hmput(&hm, svcstr(buf), NULL) = i;
+        snprintf(bufs[i], sizeof(bufs[i]), "%d", i);
+        *hmput(&hm, svcstr(bufs[i]), NULL) = i;
     }
     ASSERT(hm.cap == cap_before);
+    ASSERT(hm.len == 100);
+    for (int i = 0; i < 100; i++) {
+        int *v = hmfind(&hm, svcstr(bufs[i]));
+        ASSERT(v != NULL && *v == i);
+    }
     hmfree(&hm);
 }
 
