@@ -38,8 +38,9 @@ int main(void) {
             continue;
         sv_t lower = sbpushmap(&buf, word, tolower, &err);
         assert(err == NULL);
-        *hmput(&counts, lower, &err) += 1;
+        int *count = hmput(&counts, lower, &err);
         assert(err == NULL);
+        *count += 1;
     }
 
     arrwords_t sorted = {0};
